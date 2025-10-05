@@ -119,127 +119,66 @@
 #         return workflow_log
 
 
-import logging
 import os
-import random
-import time
+import tempfile
+import pandas as pd
 from dotenv import load_dotenv
-from pinecone import Pinecone, ServerlessSpec
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, UnstructuredPowerPointLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_pinecone import PineconeVectorStore
+from langchain_openai import ChatOpenAI
+from langchain.prompts import PromptTemplate
+from langchain.schema.output_parser import StrOutputParser
+from pinecone import Pinecone
 
-from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline
-from langchain_pinecone import Pinecone as PineconeLangChain
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from transformers import pipeline
-
+# Load environment variables from .env file
 load_dotenv()
 
-logging.basicConfig(
-    filename='support_bot_log.txt',
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+# Agent 1: IngestionAgent 
+def IngestionAgent(uploaded_file):
+    """
+    Parses documents by writing them to a temporary file and then cleaning up.
+    Returns the extracted text content as a single string.
+    """
+    file_extension = uploaded_file.name.split('.')[-1].lower()
 
-class SupportBotAgent:
-    def __init__(self, document_text: str):
-        logging.info("Initializing SupportBotAgent...")
-        self.pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-        self.index_name = "support-bot-index"
-        self._setup_knowledge_base(document_text)
-        self._setup_llm()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as temp_file:
+        temp_file.write(uploaded_file.getbuffer())
+        temp_file_path = temp_file.name
 
-    def _setup_knowledge_base(self, document_text: str):
-        logging.info("Setting up knowledge base...")
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-        docs = text_splitter.create_documents([document_text])
-        
-        model_name = "all-MiniLM-L6-v2"
-        embeddings = HuggingFaceEmbeddings(model_name=model_name)
-
-        # reset index if already exists
-        if self.index_name in self.pc.list_indexes().names():
-            self.pc.delete_index(self.index_name)
-
-        self.pc.create_index(
-            name=self.index_name, metric="cosine", dimension=384,
-            spec=ServerlessSpec(cloud='aws', region='us-east-1')
-        )
-        while not self.pc.describe_index(self.index_name).status['ready']:
-            time.sleep(1)
-
-        vector_store = PineconeLangChain.from_documents(docs, embeddings, index_name=self.index_name)
-        index = self.pc.Index(self.index_name)
-
-        while True:
-            stats = index.describe_index_stats()
-            if stats.get('total_vector_count', 0) > 0:
-                break
-            time.sleep(1)
-
-        # store retriever with top 3 docs available
-        self.retriever = vector_store.as_retriever(search_kwargs={"k": 3})
-        logging.info("Knowledge base and retriever are ready.")
-
-    def _setup_llm(self):
-        # ✅ Switch to Flan-T5 for natural generation
-        model_id = "google/flan-t5-base"
-        gen_pipeline = pipeline("text2text-generation", model=model_id, max_length=256)
-        self.llm = HuggingFacePipeline(pipeline=gen_pipeline)
-        logging.info(f"LLM with model '{model_id}' is ready.")
-
-    def _get_feedback(self):
-        feedback = random.choice(["good", "not helpful", "too vague"])
-        logging.info(f"Simulated Feedback: {feedback}")
-        return feedback
-
-    def _generate_answer(self, query, context, style="normal"):
-        """Helper to generate clean answers with Flan-T5."""
-        prompt = f"Context:\n{context}\n\nQuestion: {query}\n\nAnswer clearly and helpfully."
-        if style == "detailed":
-            prompt = f"Context:\n{context}\n\nQuestion: {query}\n\nGive a more detailed explanation."
-        elif style == "rephrase":
-            prompt = f"Context:\n{context}\n\nQuestion: {query}\n\nExplain the answer differently."
-        
-        result = self.llm.pipeline(prompt)
-        return result[0]['generated_text']
-
-    def run(self, query: str):
-        """Runs the full agentic workflow for a given query."""
-        workflow_log = []
-
-        logging.info(f"Processing query: {query}")
-        retrieved_docs = self.retriever.invoke(query)
-
-        if not retrieved_docs:
-            initial_response = "I could not find relevant information in the document."
+    documents_text = ""
+    try:
+        if file_extension == "pdf":
+            loader = PyPDFLoader(temp_file_path)
+            documents = loader.load()
+            documents_text = "\n".join([doc.page_content for doc in documents])
+        elif file_extension == "docx":
+            loader = Docx2txtLoader(temp_file_path)
+            documents = loader.load()
+            documents_text = "\n".join([doc.page_content for doc in documents])
+        elif file_extension == "pptx":
+            loader = UnstructuredPowerPointLoader(temp_file_path)
+            documents = loader.load()
+            documents_text = "\n".join([doc.page_content for doc in documents])
+        elif file_extension == "csv":
+            df = pd.read_csv(temp_file_path)
+            sentences = []
+            for index, row in df.iterrows():
+                row_str = ", ".join([f"{col}: {val}" for col, val in row.dropna().items()])
+                sentences.append(f"Row {index+1} of the CSV contains the following data: {row_str}.")
+            documents_text = "\n".join(sentences)
+        elif file_extension in ["txt", "md"]:
+            with open(temp_file_path, "r", encoding="utf-8") as f:
+                documents_text = f.read()
         else:
-            # ✅ only use top doc for first answer (prevents mixing)
-            context = retrieved_docs[0].page_content[:400]
-            initial_response = self._generate_answer(query, context)
+            print(f"Unsupported file type: {file_extension}")
+            return None
 
-        workflow_log.append({"type": "answer", "content": f"**Answer:** {initial_response}"})
-        current_response = initial_response
+    except Exception as e:
+        print(f"Error processing file {uploaded_file.name}: {e}")
+        return None
+    finally:
+        os.remove(temp_file_path)
 
-        # ✅ Feedback loop with generative refinement
-        for _ in range(2):
-            feedback = self._get_feedback()
-            workflow_log.append({"type": "feedback", "content": f"Simulated Feedback: **{feedback}**"})
-
-            if feedback == "good":
-                workflow_log.append({"type": "confirmation", "content": "Feedback is good. Answer confirmed."})
-                break
-
-            elif feedback == "too vague":
-                # re-ask with detailed style using more docs
-                more_docs = self.retriever.invoke(query)
-                more_context = " ".join([doc.page_content[:300] for doc in more_docs])
-                current_response = self._generate_answer(query, more_context, style="detailed")
-
-            elif feedback == "not helpful":
-                # re-ask with rephrased query
-                context = retrieved_docs[0].page_content[:400]
-                current_response = self._generate_answer(query, context, style="rephrase")
-
-            workflow_log.append({"type": "answer", "content": f"**Updated Answer:** {current_response}"})
-
-        return workflow_log
-
+    return documents_text
