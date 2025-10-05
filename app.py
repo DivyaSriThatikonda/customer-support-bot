@@ -8,7 +8,7 @@ import os
 st.set_page_config(page_title="Agentic Support Bot", page_icon="🤖", layout="wide")
 st.markdown("""
 <style>
-/* (Your custom CSS remains the same) */
+/* (Your custom CSS) */
 body { background-color: #FAF3E0; }
 .header-box { background: #FFFFFF; border: 1px solid #E5DCC3; padding: 18px; border-radius: 12px; text-align: center; font-size: 24px; font-weight: 600; color: #4E423D; margin-bottom: 25px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
 .chat-bubble { padding: 14px 20px; border-radius: 18px; margin: 6px 0; max-width: 80%; clear: both; line-height: 1.6; }
@@ -19,6 +19,7 @@ body { background-color: #FAF3E0; }
 
 # --- Helper Function ---
 def extract_text_from_file(uploaded_file):
+    # ... (This function remains the same)
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as temp_file:
             temp_file.write(uploaded_file.getvalue())
@@ -33,15 +34,11 @@ def extract_text_from_file(uploaded_file):
             os.remove(temp_file_path)
     return text
 
-# --- Session State & Agent Loading ---
+# --- Session State Initialization ---
 if "agent" not in st.session_state:
     st.session_state.agent = None
 if "messages" not in st.session_state:
     st.session_state.messages = []
-
-@st.cache_resource
-def load_agent(document_content):
-    return SupportBotAgent(document_text=document_content)
 
 # --- Sidebar ---
 with st.sidebar:
@@ -53,8 +50,10 @@ with st.sidebar:
             with st.spinner("Processing document... This may take a moment."):
                 document_text = extract_text_from_file(uploaded_file)
                 if document_text:
-                    st.session_state.agent = load_agent(document_text)
-                    st.session_state.messages = [] # Clear history for new document
+                    # --- THE FIX IS HERE ---
+                    # Create a new agent directly instead of using a cached function.
+                    st.session_state.agent = SupportBotAgent(document_text=document_text)
+                    st.session_state.messages = [] # Clear history for the new document
                     st.success("✅ Document processed! Ready to chat.")
         else:
             st.error("Please upload a document first.")
@@ -62,46 +61,26 @@ with st.sidebar:
 # --- Main App Area ---
 st.markdown("<div class='header-box'>🤖 Agentic Customer Support Bot</div>", unsafe_allow_html=True)
 
-# Initial message if no agent is loaded yet
-if not st.session_state.agent:
-    st.info("Please upload a document and click 'Process Document' in the sidebar to begin.")
+# Display chat messages and handle input
+if st.session_state.agent:
+    for message in st.session_state.messages:
+        role = message["role"]
+        content = message["content"]
+        if role == "user":
+            st.markdown(f"<div class='chat-bubble user-bubble'>{content}</div>", unsafe_allow_html=True)
+        elif role == "answer":
+            st.markdown(f"<div class='chat-bubble assistant-bubble'>{content}</div>", unsafe_allow_html=True)
+        elif role == "feedback":
+            st.info(content)
+        elif role == "confirmation":
+            st.success(content)
 
-# Display chat messages from history
-for message in st.session_state.messages:
-    role = message["role"]
-    content = message["content"]
-    if role == "user":
-        st.markdown(f"<div class='chat-bubble user-bubble'>{content}</div>", unsafe_allow_html=True)
-    elif role == "answer":
-        st.markdown(f"<div class='chat-bubble assistant-bubble'>{content}</div>", unsafe_allow_html=True)
-    elif role == "feedback":
-        st.info(content)
-    elif role == "confirmation":
-        st.success(content)
-
-# --- Chat Input (Always visible at the bottom) ---
-if prompt := st.chat_input("Ask a question about your document..."):
-    # Display the user's message immediately
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"): # Use Streamlit's native chat message for consistency
-        st.markdown(prompt)
-
-    # Check the state and respond with logic
-    if st.session_state.agent:
-        # If agent is ready, run the full workflow
+    if prompt := st.chat_input("Ask a question about your document..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
         with st.spinner("Thinking and iterating..."):
             workflow_log = st.session_state.agent.run(prompt)
             for item in workflow_log:
                 st.session_state.messages.append({"role": item["type"], "content": item["content"]})
-        st.rerun() # Rerun to display the agent's full response
-            
-    elif uploaded_file:
-        # If a file is uploaded but not processed
-        st.warning("Please click the 'Process Document' button in the sidebar before asking a question.")
-        st.session_state.messages.append({"role": "assistant", "content": "Please click the 'Process Document' button in the sidebar before asking a question."})
         st.rerun()
-    else:
-        # If no file has been uploaded at all
-        st.warning("Please upload a document and click 'Process Document' first.")
-        st.session_state.messages.append({"role": "assistant", "content": "Please upload a document and click 'Process Document' first."})
-        st.rerun()
+else:
+    st.info("Please upload a document and click 'Process Document' in the sidebar to begin.")
