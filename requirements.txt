@@ -8,5 +8,5 @@ langchain-huggingface
 langchain-pinecone
 langchain-text-splitters
 streamlit
-pinecone-client
+pinecone
 python-dotenv
