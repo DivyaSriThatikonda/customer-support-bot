@@ -54,20 +54,32 @@ class SupportBotAgent:
                 break
             time.sleep(1)
 
-        # ✅ Fetch top 3 docs instead of just 1
+        # ✅ Fetch top 3 docs
         self.retriever = vector_store.as_retriever(search_kwargs={"k": 3})
         logging.info("Knowledge base and retriever are ready.")
 
     def _setup_llm(self):
-        model_id = "distilbert-base-uncased-distilled-squad"
-        qa_pipeline = pipeline("question-answering", model=model_id)
-        self.llm = HuggingFacePipeline(pipeline=qa_pipeline)
+        # ✅ Switch to Flan-T5 for natural generation
+        model_id = "google/flan-t5-base"
+        gen_pipeline = pipeline("text2text-generation", model=model_id, max_length=256)
+        self.llm = HuggingFacePipeline(pipeline=gen_pipeline)
         logging.info(f"LLM with model '{model_id}' is ready.")
 
     def _get_feedback(self):
         feedback = random.choice(["good", "not helpful", "too vague"])
         logging.info(f"Simulated Feedback: {feedback}")
         return feedback
+
+    def _generate_answer(self, query, context, style="normal"):
+        """Helper to generate clean answers with Flan-T5."""
+        prompt = f"Context:\n{context}\n\nQuestion: {query}\n\nAnswer clearly and helpfully."
+        if style == "detailed":
+            prompt = f"Context:\n{context}\n\nQuestion: {query}\n\nGive a more detailed explanation."
+        elif style == "rephrase":
+            prompt = f"Context:\n{context}\n\nQuestion: {query}\n\nExplain the answer differently."
+        
+        result = self.llm.pipeline(prompt)
+        return result[0]['generated_text']
 
     def run(self, query: str):
         """Runs the full agentic workflow for a given query."""
@@ -80,13 +92,12 @@ class SupportBotAgent:
             initial_response = "I could not find relevant information in the document."
         else:
             context = " ".join([doc.page_content[:400] for doc in retrieved_docs])
-            result = self.llm.pipeline(question=query, context=context)
-            initial_response = result.get('answer', 'No answer could be found.')
-        
+            initial_response = self._generate_answer(query, context)
+
         workflow_log.append({"type": "answer", "content": f"**Answer:** {initial_response}"})
         current_response = initial_response
 
-        # ✅ Improved feedback loop
+        # ✅ Feedback loop with generative refinement
         for _ in range(2):
             feedback = self._get_feedback()
             workflow_log.append({"type": "feedback", "content": f"Simulated Feedback: **{feedback}**"})
@@ -96,16 +107,12 @@ class SupportBotAgent:
                 break
 
             elif feedback == "too vague":
-                # Re-ask with more detailed context
                 more_docs = self.retriever.invoke(query)
-                more_context = " ".join([doc.page_content[:300] for doc in more_docs])
-                result = self.llm.pipeline(question=f"{query} Please explain in more detail.", context=more_context)
-                current_response = result.get('answer', current_response + " (no improvement found)")
+                more_context = " ".join([doc.page_content[:400] for doc in more_docs])
+                current_response = self._generate_answer(query, more_context, style="detailed")
 
             elif feedback == "not helpful":
-                # Re-ask with a rephrased query
-                result = self.llm.pipeline(question=f"Rephrase: {query}", context=context)
-                current_response = result.get('answer', "Sorry, no better alternative answer found.")
+                current_response = self._generate_answer(query, context, style="rephrase")
 
             workflow_log.append({"type": "answer", "content": f"**Updated Answer:** {current_response}"})
 
