@@ -8,7 +8,6 @@ import os
 st.set_page_config(page_title="Agentic Support Bot", page_icon="🤖", layout="wide")
 st.markdown("""
 <style>
-/* (Your custom CSS) */
 body { background-color: #FAF3E0; }
 .header-box { background: #FFFFFF; border: 1px solid #E5DCC3; padding: 18px; border-radius: 12px; text-align: center; font-size: 24px; font-weight: 600; color: #4E423D; margin-bottom: 25px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
 .chat-bubble { padding: 14px 20px; border-radius: 18px; margin: 6px 0; max-width: 80%; clear: both; line-height: 1.6; }
@@ -19,19 +18,23 @@ body { background-color: #FAF3E0; }
 
 # --- Helper Function ---
 def extract_text_from_file(uploaded_file):
-    # ... (This function remains the same)
+    """Extracts text from PDF or TXT file using LangChain loaders."""
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as temp_file:
             temp_file.write(uploaded_file.getvalue())
             temp_file_path = temp_file.name
+
         loader = PyPDFLoader(temp_file_path) if uploaded_file.type == "application/pdf" else TextLoader(temp_file_path)
         text = "\n".join([doc.page_content for doc in loader.load()])
+
     except Exception as e:
         st.error(f"Error reading file: {e}")
         text = ""
+
     finally:
         if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
             os.remove(temp_file_path)
+
     return text
 
 # --- Session State Initialization ---
@@ -50,10 +53,8 @@ with st.sidebar:
             with st.spinner("Processing document... This may take a moment."):
                 document_text = extract_text_from_file(uploaded_file)
                 if document_text:
-                    # --- THE FIX IS HERE ---
-                    # Create a new agent directly instead of using a cached function.
                     st.session_state.agent = SupportBotAgent(document_text=document_text)
-                    st.session_state.messages = [] # Clear history for the new document
+                    st.session_state.messages = []  # Reset chat history
                     st.success("✅ Document processed! Ready to chat.")
         else:
             st.error("Please upload a document first.")
@@ -61,7 +62,6 @@ with st.sidebar:
 # --- Main App Area ---
 st.markdown("<div class='header-box'>🤖 Agentic Customer Support Bot</div>", unsafe_allow_html=True)
 
-# Display chat messages and handle input
 if st.session_state.agent:
     for message in st.session_state.messages:
         role = message["role"]
@@ -82,5 +82,6 @@ if st.session_state.agent:
             for item in workflow_log:
                 st.session_state.messages.append({"role": item["type"], "content": item["content"]})
         st.rerun()
+
 else:
-    st.info("Please upload a document and click 'Process Document' in the sidebar to begin.")
+    st.info("📄 Please upload a document and click 'Process Document' in the sidebar to begin.")
