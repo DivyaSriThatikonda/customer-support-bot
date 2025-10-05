@@ -1,3 +1,17 @@
+#transformers
+#sentence-transformers
+#torch
+#PyPDF2
+#langchain
+#langchain-community
+#langchain-huggingface
+#langchain-pinecone
+#langchain-text-splitters
+#streamlit
+#pinecone
+#python-dotenv
+#pypdf
+
 transformers
 sentence-transformers
 torch
@@ -8,6 +22,9 @@ langchain-huggingface
 langchain-pinecone
 langchain-text-splitters
 streamlit
-pinecone
+pinecone-client
 python-dotenv
-pypdf
+# For handling more document types
+python-docx
+unstructured[pptx]
+pandas
