@@ -1,86 +1,111 @@
-import streamlit as st
-from core_logic import SupportBotAgent
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
-import tempfile
+import logging
 import os
+import random
+import time
+from dotenv import load_dotenv
+from pinecone import Pinecone, ServerlessSpec
 
-# --- Page Config & CSS ---
-st.set_page_config(page_title="Agentic Support Bot", page_icon="🤖", layout="wide")
-st.markdown("""
-<style>
-/* (Your custom CSS) */
-body { background-color: #FAF3E0; }
-.header-box { background: #FFFFFF; border: 1px solid #E5DCC3; padding: 18px; border-radius: 12px; text-align: center; font-size: 24px; font-weight: 600; color: #4E423D; margin-bottom: 25px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-.chat-bubble { padding: 14px 20px; border-radius: 18px; margin: 6px 0; max-width: 80%; clear: both; line-height: 1.6; }
-.user-bubble { background-color: #FAB488; color: #4E423D; border-radius: 18px 18px 4px 18px; float: right; border: 1px solid #F8A56E; }
-.assistant-bubble { background-color: #FFFFFF; color: #4E423D; border: 1px solid #E5DCC3; border-radius: 18px 18px 18px 4px; float: left; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-</style>
-""", unsafe_allow_html=True)
+from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline
+from langchain_pinecone import Pinecone as PineconeLangChain
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from transformers import pipeline
 
-# --- Helper Function ---
-def extract_text_from_file(uploaded_file):
-    # ... (This function remains the same)
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as temp_file:
-            temp_file.write(uploaded_file.getvalue())
-            temp_file_path = temp_file.name
-        loader = PyPDFLoader(temp_file_path) if uploaded_file.type == "application/pdf" else TextLoader(temp_file_path)
-        text = "\n".join([doc.page_content for doc in loader.load()])
-    except Exception as e:
-        st.error(f"Error reading file: {e}")
-        text = ""
-    finally:
-        if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
-    return text
+load_dotenv()
 
-# --- Session State Initialization ---
-if "agent" not in st.session_state:
-    st.session_state.agent = None
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+logging.basicConfig(
+    filename='support_bot_log.txt',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
-# --- Sidebar ---
-with st.sidebar:
-    st.header("📂 Upload Your Document")
-    uploaded_file = st.file_uploader("Upload a PDF or TXT file", type=["pdf", "txt"])
+class SupportBotAgent:
+    def __init__(self, document_text: str):
+        # ... (this part remains the same)
+        logging.info("Initializing SupportBotAgent...")
+        self.pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+        self.index_name = "support-bot-index"
+        self._setup_knowledge_base(document_text)
+        self._setup_llm()
 
-    if st.button("🚀 Process Document"):
-        if uploaded_file:
-            with st.spinner("Processing document... This may take a moment."):
-                document_text = extract_text_from_file(uploaded_file)
-                if document_text:
-                    # --- THE FIX IS HERE ---
-                    # Create a new agent directly instead of using a cached function.
-                    st.session_state.agent = SupportBotAgent(document_text=document_text)
-                    st.session_state.messages = [] # Clear history for the new document
-                    st.success("✅ Document processed! Ready to chat.")
+    def _setup_knowledge_base(self, document_text: str):
+        # ... (this part remains the same)
+        logging.info("Setting up knowledge base...")
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+        docs = text_splitter.create_documents([document_text])
+        model_name = "all-MiniLM-L6-v2"
+        embeddings = HuggingFaceEmbeddings(model_name=model_name)
+        if self.index_name in self.pc.list_indexes().names():
+            self.pc.delete_index(self.index_name)
+        self.pc.create_index(
+            name=self.index_name, metric="cosine", dimension=384,
+            spec=ServerlessSpec(cloud='aws', region='us-east-1')
+        )
+        while not self.pc.describe_index(self.index_name).status['ready']:
+            time.sleep(1)
+        vector_store = PineconeLangChain.from_documents(docs, embeddings, index_name=self.index_name)
+        index = self.pc.Index(self.index_name)
+        while True:
+            stats = index.describe_index_stats()
+            if stats.get('total_vector_count', 0) > 0:
+                break
+            time.sleep(1)
+        self.retriever = vector_store.as_retriever(search_kwargs={"k": 1})
+        logging.info("Knowledge base and retriever are ready.")
+
+    def _setup_llm(self):
+        # ... (this part remains the same)
+        model_id = "distilbert-base-uncased-distilled-squad"
+        qa_pipeline = pipeline("question-answering", model=model_id)
+        self.llm = HuggingFacePipeline(pipeline=qa_pipeline)
+        logging.info(f"LLM with model '{model_id}' is ready.")
+
+    def _get_feedback(self):
+        # ... (this part remains the same)
+        feedback = random.choice(["good", "not helpful", "too vague"])
+        logging.info(f"Simulated Feedback: {feedback}")
+        return feedback
+
+    def run(self, query: str):
+        """Runs the full agentic workflow for a given query."""
+        workflow_log = []
+
+        logging.info(f"Processing query: {query}")
+        retrieved_docs = self.retriever.invoke(query)
+
+        # --- NEW DEBUG PRINT STATEMENT ---
+        print("\n" + "="*50)
+        print(f"DEBUG: For query '{query}', I retrieved the following documents:")
+        if not retrieved_docs:
+            print("--- NO DOCUMENTS RETRIEVED ---")
+        for i, doc in enumerate(retrieved_docs):
+            print(f"--- DOC {i+1} ---\n{doc.page_content}\n" + "-"*15)
+        print("="*50 + "\n")
+        # --- END DEBUG PRINT ---
+
+        if not retrieved_docs:
+            initial_response = "I could not find relevant information in the document."
         else:
-            st.error("Please upload a document first.")
-
-# --- Main App Area ---
-st.markdown("<div class='header-box'>🤖 Agentic Customer Support Bot</div>", unsafe_allow_html=True)
-
-# Display chat messages and handle input
-if st.session_state.agent:
-    for message in st.session_state.messages:
-        role = message["role"]
-        content = message["content"]
-        if role == "user":
-            st.markdown(f"<div class='chat-bubble user-bubble'>{content}</div>", unsafe_allow_html=True)
-        elif role == "answer":
-            st.markdown(f"<div class='chat-bubble assistant-bubble'>{content}</div>", unsafe_allow_html=True)
-        elif role == "feedback":
-            st.info(content)
-        elif role == "confirmation":
-            st.success(content)
-
-    if prompt := st.chat_input("Ask a question about your document..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.spinner("Thinking and iterating..."):
-            workflow_log = st.session_state.agent.run(prompt)
-            for item in workflow_log:
-                st.session_state.messages.append({"role": item["type"], "content": item["content"]})
-        st.rerun()
-else:
-    st.info("Please upload a document and click 'Process Document' in the sidebar to begin.")
+            context = "\n".join([doc.page_content for doc in retrieved_docs])
+            result = self.llm.pipeline(question=query, context=context)
+            initial_response = result.get('answer', 'No answer could be found.')
+        
+        # ... (The rest of the feedback loop remains the same)
+        workflow_log.append({"type": "answer", "content": f"**Answer:** {initial_response}"})
+        current_response = initial_response
+        for i in range(2):
+            feedback = self._get_feedback()
+            workflow_log.append({"type": "feedback", "content": f"Simulated Feedback: **{feedback}**"})
+            if feedback == "good":
+                workflow_log.append({"type": "confirmation", "content": "Feedback is good. Answer confirmed."})
+                break
+            if feedback == "too vague":
+                context = "\n".join([doc.page_content for doc in retrieved_docs])
+                current_response = f"{current_response}\n\n**More Info:** {context[:200]}..."
+            elif feedback == "not helpful":
+                if retrieved_docs:
+                    full_context = retrieved_docs[0].page_content
+                    current_response = (f"I see the previous answer was not helpful. Here is the full context from the most relevant section:\n\n---\n\n> {full_context}")
+                else:
+                    current_response = "I was unable to find an alternative answer."
+            workflow_log.append({"type": "answer", "content": f"**Updated Answer:** {current_response}"})
+        return workflow_log
