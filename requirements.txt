@@ -1,0 +1,12 @@
+transformers
+sentence-transformers
+torch
+PyPDF2
+langchain
+langchain-community
+langchain-huggingface
+langchain-pinecone
+langchain-text-splitters
+streamlit
+pinecone-client
+python-dotenv
